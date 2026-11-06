@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="graphite">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>硬件看板</title>
+<style>
+/* ============================================================
+   视觉层：中性单色系 + 单一信号色。颜色只用来表达状态，不做装饰。
+   三套主题挂在 html[data-theme]：graphite(默认) / paper / terminal
+   ============================================================ */
+:root{
+  --bg:#0b0d0f; --panel:#131619; --panel2:#171b1f; --line:#252b30; --hair:#1e2327;
+  --grid:rgba(255,255,255,.05);
+  --tx:#d8dce1; --mut:#8b9399; --dim:#5b6368;
+  --accent:#e9a13b; --s1:#e2e7ec; --s2:#8f979d; --s3:#4e565c;
+  --accent-soft:rgba(233,161,59,.20); --accent-line:rgba(233,161,59,.52);
+  --ok:#7db08d; --warn:#e9a13b; --crit:#e0524b;
+  --sans:system-ui,-apple-system,"Segoe UI","Noto Sans SC","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --gap:8px; --rad:3px;
+}
+html[data-theme="paper"]{
+  --bg:#eae7e1; --panel:#faf8f5; --panel2:#f2efe9; --line:#d8d3ca; --hair:#e4e0d8;
+  --grid:rgba(0,0,0,.07);
+  --tx:#1d2126; --mut:#6b7178; --dim:#9ba1a7;
+  --accent:#a75c15; --s1:#262c33; --s2:#7c848b; --s3:#adb4ba;
+  --accent-soft:rgba(167,92,21,.15); --accent-line:rgba(167,92,21,.46);
+  --ok:#2f6f45; --warn:#a75c15; --crit:#ab2f26;
+}
+html[data-theme="terminal"]{
+  --bg:#040705; --panel:#0a0e0b; --panel2:#0d120e; --line:#1b2620; --hair:#141b16;
+  --grid:rgba(120,220,150,.07);
+  --tx:#c6e6cf; --mut:#6f9c7e; --dim:#3f5f4a;
+  --accent:#4ad97b; --s1:#9fe9b6; --s2:#528f65; --s3:#3d6b4c;
+  --accent-soft:rgba(74,217,123,.14); --accent-line:rgba(74,217,123,.46);
+  --ok:#4ad97b; --warn:#e3c34a; --crit:#ff5c4d;
+  --sans:var(--mono);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--tx);
+  font:13px/1.42 var(--sans);-webkit-font-smoothing:antialiased}
+/* 铺满模式：固定一屏，不出滚动条（最后一行用 1fr 吃剩下的空间） */
+html.fit{overflow:hidden} html.fit body{overflow:hidden}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+
+.board{padding:var(--gap);gap:var(--gap);display:grid;grid-auto-rows:minmax(168px,auto);
+  grid-template-columns:repeat(12,1fr);
+  grid-template-areas:
+    "hd hd hd hd hd hd hd hd hd hd hd hd"
+    "kp kp kp kp kp kp kp kp kp kp kp kp"
+    "c1 c1 c1 c1 c2 c2 c2 c2 c3 c3 c3 c3"
+    "gp gp gp gp gp gp gp gp gp gp gp gp"
+    "e1 e1 e1 e2 e2 e2 eq eq eq eq ev ev"
+    "ft ft ft ft ft ft ft ft ft ft ft ft";}
+/* 铺满模式一屏收完：上面几行给确定高度，最后一行（最近请求/事件）用 1fr
+   吃剩下的空间。吞吐/温度/磁盘那一行已取消，空出来的高度全给底行。
+   注意：1fr 只能在 height:100vh 的板上用；要是哪天又改回 height:auto，
+   1fr 会被内容（120 条请求列表）反算到 1000px+，整板爆长。 */
+html.fit .board{height:100vh;min-height:0;grid-auto-rows:auto;
+  grid-template-rows:38px var(--kpih,84px) var(--crow,196px) var(--gpub,190px) 1fr 22px}
+html.scroll .board{grid-auto-rows:auto;height:auto}
+html.scroll .card{min-height:158px}
+/* 滚动版式下长列表必须封住高度：否则 120 条请求会把整张卡顶到 1000px+，
+   整页长到 2600px，底行永远看不见。 */
+html.scroll .card .scroll,html.scroll .kv{max-height:280px}
+html.scroll .kpis{grid-template-columns:repeat(1,1fr)}
+html.scroll .kpi{min-height:78px}
+html.scroll .kpis .kpi:nth-child(2){border-left:1px solid var(--hair)}
+
+.card{background:var(--panel);border:1px solid var(--hair);border-radius:var(--rad);
+  padding:6px 9px;min-height:0;min-width:0;display:flex;flex-direction:column;overflow:hidden}
+.ct{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
+  font-size:10px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--mut);margin-bottom:5px;padding-bottom:4px;flex:none;
+  border-bottom:1px solid var(--hair)}
+.ct .l{font-size:10px;color:var(--mut);display:flex;gap:10px;font-weight:400;letter-spacing:0;
+  text-transform:none;white-space:nowrap}
+.ct .l span::before{content:"";display:inline-block;width:8px;height:1.5px;vertical-align:middle;
+  margin-right:4px;background:currentColor}
+canvas{display:block;width:100%;flex:1;min-height:0}
+
+header{grid-area:hd;display:flex;align-items:center;gap:10px;padding:0 2px}
+.host{font-size:15px;font-weight:600;letter-spacing:.01em;white-space:nowrap}
+.host .sub{font-size:10.5px;color:var(--dim);font-weight:400;margin-left:8px;font-family:var(--mono);
+  letter-spacing:0}
+.spacer{flex:1}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border:1px solid var(--hair);
+  border-radius:var(--rad);font-size:10.5px;color:var(--mut);background:var(--panel);white-space:nowrap;
+  letter-spacing:.02em}
+.pill b{color:var(--tx);font-weight:600;font-family:var(--mono)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--dim);flex:none}
+.dot.ok{background:var(--ok)}
+.dot.warn{background:var(--warn);box-shadow:0 0 0 2px rgba(233,161,59,.18)}
+.dot.crit{background:var(--crit);box-shadow:0 0 0 2px rgba(224,82,75,.2)}
+.dot.off{background:var(--dim)}
+.ranges{display:flex;gap:1px;background:var(--panel2);border:1px solid var(--hair);
+  border-radius:var(--rad);padding:1px}
+.ranges button{background:none;border:0;color:var(--mut);padding:3px 8px;border-radius:2px;
+  cursor:pointer;font:10.5px var(--mono);letter-spacing:.02em}
+.ranges button:hover{color:var(--tx)}
+.ranges button.on{background:var(--accent);color:var(--bg);font-weight:600}
+html[data-theme="paper"] .ranges button.on{color:#fff}
+
+/* KPI：一整条仪表带，内部只靠发丝分隔，不做 12 个盒子 */
+.kpis{grid-area:kp;display:grid;grid-template-columns:repeat(12,1fr);
+  background:var(--panel);border:1px solid var(--hair);border-radius:var(--rad);overflow:hidden}
+.kpi{padding:5px 9px 4px;border-left:1px solid var(--hair);min-width:0;display:flex;
+  flex-direction:column;overflow:hidden}
+.kpi:first-child{border-left:0}
+.kpi .lab{font-size:9.5px;color:var(--mut);letter-spacing:.11em;text-transform:uppercase;
+  white-space:nowrap;overflow:hidden;display:flex;align-items:center;gap:5px}
+.kpi .val{font:590 22px/1.08 var(--mono);letter-spacing:-.02em;margin-top:2px;white-space:nowrap}
+.kpi .val small{font-size:10.5px;color:var(--mut);font-weight:400;margin-left:2px;letter-spacing:0}
+.kpi canvas{height:16px;flex:none;margin:1px 0 1px}
+.kpi .foot{font-size:9.5px;color:var(--dim);font-family:var(--mono);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+
+.c1{grid-area:c1}.c2{grid-area:c2}.c3{grid-area:c3}
+/* CPU 线程块：每格一个 SMT 线程，18 列 × 2 行；第 i 列上下两格是同一个物理核的
+   cpu i / cpu i+18（/proc/stat 的编号顺序刚好是前半物理核、后半兄弟线程） */
+.cores{display:grid;grid-template-columns:repeat(18,1fr);grid-template-rows:repeat(2,1fr);
+  gap:3px;flex:1;min-height:0;margin-top:3px}
+.core{min-width:0;border-radius:3px;box-shadow:inset 0 0 0 1px var(--hair);
+  transition:background-color .2s ease, color .2s ease;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  overflow:hidden;font-family:var(--mono);font-variant-numeric:tabular-nums;line-height:1.06}
+.core i{font-style:normal;font-size:7.5px;opacity:.72;letter-spacing:0}
+.core b{font-size:9.5px;font-weight:650;white-space:nowrap}
+/* 线程多、格子窄时（新 CPU 44 线程→22 列）：藏编号只留百分比 */
+.cores.dense .core i{display:none}
+.cores.dense .core b{font-size:8px}
+.cores.tiny .core b{font-size:7px}
+
+.gp{grid-area:gp}
+.gpus{display:grid;grid-template-columns:repeat(8,1fr);gap:var(--gap);flex:1;min-height:0}
+.gcard{background:var(--panel2);border:1px solid var(--hair);border-radius:var(--rad);padding:5px 7px;
+  display:flex;flex-direction:column;min-width:0;
+  transition:background-color .18s ease, box-shadow .18s ease, border-color .18s ease}
+/* 流水线串行：谁在出力谁亮一下。底色只上主题信号色的 9~11%，
+   加一条左竖条界定边界，不抢数值的眼；保持期见 JS 里的 BUSY_HOLD */
+.gcard.busy{background:var(--accent-soft);border-color:var(--accent-line);
+  box-shadow:inset 3px 0 0 var(--accent)}
+.gcard .gh{display:flex;align-items:center;gap:5px;font-size:10.5px;font-weight:600;
+  letter-spacing:.02em;white-space:nowrap;overflow:hidden}
+.gcard .gi{font:9.5px var(--mono);color:var(--dim)}
+.mbar{height:11px;background:var(--hair);border-radius:1px;overflow:hidden;position:relative;margin:5px 0 4px}
+.mbar i{display:block;height:100%;background:var(--mut);opacity:.45}
+.mbar i.warn{background:var(--warn);opacity:.85}
+.mbar span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font:9.5px var(--mono);color:var(--tx);text-shadow:0 0 3px var(--bg),0 0 2px var(--bg)}
+.gline{display:flex;justify-content:space-between;align-items:baseline;font-size:10px;color:var(--mut);
+  line-height:1.55;letter-spacing:.02em}
+.gline b{font-family:var(--mono);color:var(--tx);font-weight:500;font-size:10.5px}
+.gcard canvas{height:30px;flex:none;margin-top:3px;border-top:1px solid var(--hair);padding-top:2px}
+.badge{font-size:8.5px;padding:0 3px;border-radius:1px;background:transparent;
+  color:var(--warn);border:1px solid var(--warn);font:8.5px var(--mono);letter-spacing:.04em}
+.badge.soft{color:var(--mut);border-color:var(--line)}
+
+.e1{grid-area:e1}.e2{grid-area:e2}.eq{grid-area:eq}.ev{grid-area:ev}
+.kv{display:grid;grid-template-columns:1fr auto;gap:2px 12px;font-size:11px;overflow:auto;min-height:0}
+.kv .k{color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kv .v{font-family:var(--mono);text-align:right;white-space:nowrap;font-size:11px}
+.kv .v em{font-style:normal;color:var(--tx)}
+.kv .v em.k{color:var(--accent)}
+.prog{height:5px;background:var(--hair);overflow:hidden;display:flex;flex:none;margin:5px 0 4px}
+.prog i{display:block;height:100%}
+.scroll{overflow:auto;min-height:0;flex:1}
+table{width:100%;border-collapse:collapse;font:10.5px var(--mono)}
+th{position:sticky;top:0;background:var(--panel);text-align:right;color:var(--dim);font-weight:500;
+  font-size:9px;padding:2px 5px 5px;border-bottom:1px solid var(--line);white-space:nowrap;
+  letter-spacing:.04em}
+td{text-align:right;padding:2px 5px;border-bottom:1px solid var(--hair);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+tbody tr:hover{background:var(--panel2)}
+.evt{display:flex;gap:8px;padding:3px 0;border-bottom:1px solid var(--hair);font-size:11px;
+  align-items:baseline}
+.evt .et{font:9.5px var(--mono);color:var(--dim);flex:none}
+.evt .em{color:var(--tx)}
+.evt.warn .em{color:var(--warn)} .evt.crit .em{color:var(--crit)} .evt.info .em{color:var(--mut)}
+.empty{color:var(--dim);font-size:11px;text-align:center;padding:14px 0}
+footer{grid-area:ft;display:flex;align-items:center;gap:16px;font-size:10px;color:var(--dim);
+  padding:0 2px;white-space:nowrap;overflow:hidden;letter-spacing:.02em}
+footer b{color:var(--mut);font-weight:500;font-family:var(--mono)}
+.err{position:fixed;right:14px;bottom:14px;max-width:60vw;background:var(--panel);
+  border:1px solid var(--crit);color:var(--crit);padding:6px 10px;border-radius:var(--rad);
+  font:11.5px var(--mono);display:none;z-index:9}
+
+@media(max-width:1500px){.kv{font-size:10.5px}.kpi .val{font-size:19px}
+  .ct .l{display:none}}
+html.fit.short{--kpih:74px;--crow:170px;--gpub:172px}
+html.fit.short .kpi .val{font-size:19px}
+html.fit.short .kpi canvas{height:14px}
+html.fit.tiny{--kpih:66px;--crow:150px;--gpub:156px}
+html.fit.tiny .kpi .val{font-size:17px}
+html.fit.tiny .ct{font-size:9.5px}
+@media(max-width:1200px){html.scroll .board{grid-template-columns:repeat(2,1fr);
+  grid-template-areas:"hd hd" "kp kp" "c1 c2" "c3 c3" "gp gp" "e1 e2" "eq ev" "ft ft"}
+  html.scroll .kpis{grid-template-columns:repeat(4,1fr)}
+  html.scroll .kpis .kpi:nth-child(4n+1){border-left:0}
+  html.scroll .gpus{grid-template-columns:repeat(4,1fr)}}
+@media(max-width:780px){html.scroll .board{grid-template-columns:1fr;
+  grid-template-areas:"hd" "kp" "c1" "c2" "c3" "gp" "e1" "e2" "eq" "ev" "ft"}
+  html.scroll .kpis{grid-template-columns:repeat(3,1fr)}
+  html.scroll .kpis .kpi:nth-child(3n+1){border-left:0}
+  html.scroll .gpus{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<script>
+window.addEventListener('error',function(ev){var d=document.getElementById('err');
+  if(d){d.style.display='block';d.textContent='页面脚本异常：'+ev.message+'（行 '+ev.lineno+'）';}});
+</script>
+<div id="err" class="err"></div>
+
+<div class="board">
+  <header>
+    <div class="host"><span id="host">…</span><span class="sub" id="cpuinfo"></span></div>
+    <div class="pill"><span class="dot off" id="engdot"></span><span id="engstate">检测中</span></div>
+    <div class="spacer"></div>
+    <div class="pill">上下文 <b id="ctxpct">—</b></div>
+    <div class="pill">运行 <b id="uptime">—</b></div>
+    <div class="pill">延迟 <b id="lastage">—</b></div>
+    <div class="ranges" id="ranges">
+      <button data-r="900">15m</button><button data-r="3600" class="on">1h</button>
+      <button data-r="21600">6h</button><button data-r="86400">24h</button><button data-r="604800">7d</button>
+    </div>
+    <div class="ranges" id="modes" title="铺满：一屏到底不滚动｜滚动：窄窗口堆叠｜自动：按窗口大小选">
+      <button data-m="fit">铺满</button><button data-m="scroll">滚动</button><button data-m="auto" class="on">自动</button>
+    </div>
+    <div class="ranges" id="themes" title="配色：石墨（默认）/ 纸白 / 终端">
+      <button data-t="graphite">石墨</button><button data-t="paper">纸白</button><button data-t="terminal">终端</button>
+    </div>
+  </header>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card c1"><div class="ct"><span>CPU</span><div class="l"><b id="cpunow" style="font-size:14px">—</b><i id="cpupk" style="color:var(--mut);font-style:normal"></i><span>负载 <b id="cpuload">—</b> / <b id="cpun">?</b> 线程</span></div></div><div class="cores" id="cores"></div></div>
+  <div class="card c2"><div class="ct"><span>内存</span><div class="l"><span style="color:var(--s1)">占用 <b id="memused">—</b></span><span style="color:var(--s2)">引擎侧内存 <b id="memrss">—</b></span><span style="color:var(--mut)">可用 <b id="memavail">—</b></span></div></div><canvas id="c_mem"></canvas></div>
+  <div class="card c3"><div class="ct"><span>GPU</span><div class="l"><span style="color:var(--accent)">利用率</span><span style="color:var(--s1)">功率占上限</span></div></div><canvas id="c_gpu"></canvas></div>
+  <!-- 原来的吞吐 / 温度 / 磁盘网络三张图已取消：它们的曲线在 KPI 带和显卡行里都有，
+       占一整行不值。对应的历史拉取改走 loadExtra（KPI 小走势还要用）。 -->
+
+  <div class="card gp"><div class="ct"><span>显卡</span><span class="l" id="gsum"></span></div><div class="gpus" id="gpus"></div></div>
+
+  <div class="card e1">
+    <div class="ct"><span>引擎实时</span><span class="l" id="engvia"></span></div>
+    <div style="font-size:13px;font-weight:600" id="lvphase">—</div>
+    <div class="kv" style="font-size:10.5px;grid-template-columns:1fr" id="lvsub"></div>
+    <div class="prog"><i id="progRead" style="background:var(--accent);width:0"></i><i id="progGen" style="background:var(--s2);width:0"></i></div>
+    <div class="kv" id="lvkv"></div>
+    <div class="ct" style="margin-top:5px"><span>内存构成</span></div>
+    <div class="kv" id="memkv"></div>
+  </div>
+  <div class="card e2">
+    <div class="ct"><span>引擎配置</span></div>
+    <div class="kv" id="engkv"></div>
+  </div>
+  <div class="card eq">
+    <div class="ct"><span>最近请求</span><span class="l" id="eqsum"></span></div>
+    <div class="scroll"><table id="reqs"><thead><tr>
+      <th>时刻</th><th>时长</th><th>Prompt</th><th>复用</th><th>输出</th>
+      <th>TTFT</th><th>解码 t/s</th><th>MTP</th><th>结束</th></tr></thead><tbody></tbody></table>
+      <div class="empty" id="reqempty" style="display:none">暂无请求</div></div>
+  </div>
+  <div class="card ev">
+    <div class="ct"><span>告警</span><span class="l">5 分钟去重</span></div>
+    <div class="scroll" id="evts"></div>
+  </div>
+
+  <footer>
+    <span id="fmounts"></span><span id="fnet"></span><span id="fdisk"></span>
+    <span id="fsys"></span><span style="flex:1"></span><span id="flinks"></span>
+  </footer>
+</div>
+
+<script>
+"use strict";
+let RANGE = 3600, META = {}, gpuHist = {}, reqRows = [], LAST = null;
+const $ = s => document.querySelector(s);
+const GB = 1073741824, MB = 1048576;
+/* ---------- 调色板：跟着 html[data-theme] 走，切主题时重取 ---------- */
+const C = {}, RGB = {};
+const PAL = ['accent','s1','s2','s3','ok','warn','crit','tx','mut','dim','grid','panel','hair'];
+function hx(h){ h=(h||'').trim();
+  if(h.charAt(0)!=='#') return null;
+  if(h.length===4) h='#'+h.charAt(1)+h.charAt(1)+h.charAt(2)+h.charAt(2)+h.charAt(3)+h.charAt(3);
+  return [parseInt(h.substr(1,2),16), parseInt(h.substr(3,2),16), parseInt(h.substr(5,2),16)]; }
+function readPalette(){
+  const cs=getComputedStyle(document.documentElement);
+  PAL.forEach(k=>{ const v=cs.getPropertyValue('--'+k).trim(); C[k]=v||'#8b9399'; });
+  ['s1','s2','warn','crit','accent'].forEach(k=>{ const r=hx(C[k]); RGB[k]= r? r.join(',') : '139,147,153'; });
+}
+readPalette();
+
+function fmtGB(b){ return b==null||isNaN(b) ? '—' : (b/GB).toFixed(b<GB?2:1)+' GiB'; }
+function fmtRate(b){ if(b==null||isNaN(b)) return '—';
+  return b<MB ? (b/1024).toFixed(0)+' KB/s' : (b/MB).toFixed(1)+' MB/s'; }
+function fmtDur(s){ if(s==null||isNaN(s)) return '—';
+  if(s<60) return s.toFixed(s<10?1:0)+'s';
+  if(s<3600) return Math.floor(s/60)+'m'+String(Math.round(s%60)).padStart(2,'0');
+  return Math.floor(s/3600)+'h'+String(Math.floor(s%3600/60)).padStart(2,'0'); }
+function fmtUp(s){ if(s==null) return '—'; const d=Math.floor(s/86400),h=Math.floor(s%86400/3600);
+  return (d?d+'天':'')+(h||d?h+'时':'')+Math.floor(s%3600/60)+'分'; }
+function hhmm(ts){ const d=new Date(ts*1000);
+  return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+function lvl(v,w,c){ return v==null?'off':(v>=c?'crit':v>=w?'warn':'ok'); }
+function em(x){ return '<em>'+x+'</em>'; }
+
+/* ---------- 画布 ---------- */
+function fit(cv){
+  const dpr = window.devicePixelRatio||1, r = cv.getBoundingClientRect();
+  const w = Math.max(60, Math.round(r.width*dpr)), h = Math.max(20, Math.round(r.height*dpr));
+  if(cv.width!==w||cv.height!==h) { cv.width=w; cv.height=h; }
+  const g = cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
+  return [g, r.width, r.height];
+}
+function niceMax(m){ if(m<=0) return 1;
+  const p=Math.pow(10,Math.floor(Math.log10(m))), n=m/p;
+  return (n<=1?1:n<=2?2:n<=2.5?2.5:n<=5?5:10)*p; }
+/* 往下取整到整数档（带 .5 档），给缩放轴算一个干净的下沿 */
+function niceFloor(m){ if(!(m>0)) return 0;
+  const p=Math.pow(10,Math.floor(Math.log10(m))), n=m/p;
+  return (n>=10?10:n>=9?9:n>=8?8:n>=7?7:n>=6?6:n>=5?5:n>=4?4:n>=3?3:n>=2.5?2.5:n>=2?2:n>=1.5?1.5:1)*p; }
+
+function draw(cv, data, series, opt){
+  opt = opt||{};
+  const [g,W,H] = fit(cv);
+  g.clearRect(0,0,W,H);
+  if(!cv.width) return;
+  if(!data || !data.ts || data.ts.length<2){
+    g.fillStyle=C.dim; g.font='10px ui-monospace,monospace'; g.fillText('采集中…',4,H/2); return; }
+  const padL = opt.axis===false ? 0 : (opt.padL!=null?opt.padL:38), padR=5, padT=opt.axis===false?2:4, padB=opt.axis===false?2:13;
+  const iw = W-padL-padR, ih = H-padT-padB;
+  const V = (v,s) => (v==null ? null : (s.div ? v/s.div : v));
+  let mx = 0, mn = Infinity;
+  series.forEach(s=>{ const arr=data.series[s.i]; if(!arr) return;
+    arr.forEach(v=>{ const x=V(v,s); if(x==null) return; if(x>mx) mx=x; if(x<mn) mn=x; }); });
+  let fixedMax = opt.fixMax!=null ? opt.fixMax : niceMax(Math.max(mx,opt.minMax||0)*1.15);
+  /* 内存这种常年待在 190~215 GiB 的量，从 0 起画就是一条贴顶直线，看着像没刷新。
+     floorZero:false + step → 纵轴收到数据带附近并按 step 对齐，轴标签仍写真实 GiB，
+     涨跌看得见又不骗人。（量级差 170 倍的交换不再画进来，永远贴着底没意义） */
+  let base = 0;
+  if(opt.fixMax==null && opt.floorZero===false && isFinite(mn) && mx>0){
+    const st = opt.step || 0, pad = Math.max((mx-mn)*0.5, st||1);
+    base = st ? Math.floor(Math.max(0,mn-pad)/st)*st : niceFloor(Math.max(0,mn-pad));
+    fixedMax = st ? Math.ceil((mx+pad)/st)*st : niceMax(mx+pad);
+    if(fixedMax<=base) fixedMax = base + (st||1);
+  }
+  const span = Math.max(1e-9, fixedMax - base);
+  g.strokeStyle=C.grid; g.lineWidth=1;
+  g.fillStyle=C.dim; g.font='9px ui-monospace,monospace'; g.textAlign='right';
+  if(opt.axis!==false) for(let k=0;k<=4;k++){
+    const y=padT+ih-ih*k/4, lv=base+span*k/4;
+    g.beginPath(); g.moveTo(padL,y); g.lineTo(W-padR,y); g.stroke();
+    g.fillText(opt.axf?opt.axf(lv):(lv).toFixed(fixedMax<10?1:0), padL-4, y+3);
+  }
+  const n=data.ts.length, X = i => padL + iw*i/(n-1),
+        Y = (v,s) => padT+ih-ih*Math.min(Math.max(V(v,s)-base,0),span)/span;
+  g.textAlign='center';
+  if(opt.axis!==false){
+    const step=Math.max(1,Math.ceil(n/7)); let last=null;
+    for(let i=0;i<n;i+=step){ const t=hhmm(data.ts[i]);
+      if(t!==last){ last=t; g.fillText(t, Math.min(W-16,padL+iw*i/(n-1)), H-2); } }
+  }
+  if(opt.thr) opt.thr.forEach(t=>{ if(t.v>fixedMax) return;
+    const tc=C[t.k]||t.color||C.crit;
+    g.save(); g.setLineDash([3,3]); g.strokeStyle=tc; g.globalAlpha=.6; g.lineWidth=1;
+    const y=Y(t.v,{}); g.beginPath(); g.moveTo(padL,y); g.lineTo(W-padR,y); g.stroke();
+    g.globalAlpha=1; g.restore(); });
+  series.forEach(s=>{
+    const vals=data.series[s.i]; if(!vals) return; let on=false;
+    const sc=C[s.k]||s.color||C.s1;
+    g.beginPath();
+    /* Y() 内部已经做过 s.div 换算，这里必须传原始值。
+       旧写法先把 v=V(vals[i],s) 算成 GiB 再喂给 Y()，等于除了两次 GB，
+       值被压到 1.9e-7 → 钳到坐标轴底部，内存图长期是一条贴底直线，
+       看起来就像「这张图不刷新」。 */
+    for(let i=0;i<n;i++){ const raw=vals[i]; if(raw==null){on=false;continue;}
+      if(!on){ g.moveTo(X(i),Y(raw,s)); on=true; } else g.lineTo(X(i),Y(raw,s)); }
+    if(s.fill){ g.save();
+      const grd=g.createLinearGradient(0,padT,0,padT+ih);
+      grd.addColorStop(0,sc+'38'); grd.addColorStop(1,sc+'04');
+      g.lineTo(X(n-1),padT+ih); g.lineTo(X(0),padT+ih); g.closePath();
+      g.fillStyle=grd; g.fill(); g.restore(); }
+    g.beginPath(); on=false;
+    for(let i=0;i<n;i++){ const raw=vals[i]; if(raw==null){on=false;continue;}
+      if(!on){ g.moveTo(X(i),Y(raw,s)); on=true; } else g.lineTo(X(i),Y(raw,s)); }
+    g.strokeStyle=sc; g.lineWidth=s.w||1.4; g.lineJoin='round'; g.stroke();
+    for(let i=n-1;i>=0;i--){ if(vals[i]!=null){
+      g.fillStyle=sc; g.beginPath(); g.arc(X(i),Y(vals[i],s),1.8,0,6.284); g.fill(); break; } }
+  });
+}
+function spark(cv, vals, key){
+  if(!cv) return;
+  const color=C[key]||key||C.accent;
+  const [g,W,H] = fit(cv); g.clearRect(0,0,W,H);
+  const v = (vals||[]).filter(x=>x!=null);
+  if(v.length<2){ return; }
+  let lo=Math.min(...v), hi=Math.max(...v);
+  if(hi-lo < 1e-9){ hi=lo+1; lo=lo-0.5; }
+  const pad=2, n=vals.length, X=i=>pad+(W-2*pad)*i/(n-1), Y=y=>H-pad-(H-2*pad)*(y-lo)/(hi-lo);
+  g.beginPath(); let on=false;
+  for(let i=0;i<n;i++){ if(vals[i]==null){on=false;continue;}
+    if(!on){g.moveTo(X(i),Y(vals[i]));on=true;} else g.lineTo(X(i),Y(vals[i])); }
+  g.save(); g.lineTo(X(n-1),H); g.lineTo(X(0),H); g.closePath();
+  const grd=g.createLinearGradient(0,0,0,H); grd.addColorStop(0,color+'44'); grd.addColorStop(1,color+'00');
+  g.fillStyle=grd; g.fill(); g.restore();
+  g.beginPath(); on=false;
+  for(let i=0;i<n;i++){ if(vals[i]==null){on=false;continue;}
+    if(!on){g.moveTo(X(i),Y(vals[i]));on=true;} else g.lineTo(X(i),Y(vals[i])); }
+  g.strokeStyle=color; g.lineWidth=1.2; g.lineJoin='round'; g.stroke();
+}
+
+function gauge(cv, pct, key){
+  if(!cv) return;
+  const color=C[key]||key||C.accent;
+  const [g,W,H] = fit(cv); g.clearRect(0,0,W,H);
+  const p = Math.max(0, Math.min(100, pct||0));
+  g.fillStyle=C.hair||C.dim; roundRect(g,0,(H-5)/2,W,5,2.5); g.fill();
+  g.fillStyle=color; roundRect(g,0,(H-5)/2,Math.max(3,W*p/100),5,2.5); g.fill();
+}
+function roundRect(g,x,y,w,h,r){
+  r=Math.min(r,h/2,w/2); g.beginPath();
+  g.moveTo(x+r,y); g.lineTo(x+w-r,y); g.quadraticCurveTo(x+w,y,x+w,y+r);
+  g.lineTo(x+w,y+h-r); g.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  g.lineTo(x+r,y+h); g.quadraticCurveTo(x,y+h,x,y+h-r);
+  g.lineTo(x,y+r); g.quadraticCurveTo(x,y,x+r,y); g.closePath();
+}
+
+function gsparkData(h, plimit){
+  if(!h || !h.series) return null;
+  const pw = h.series[3]||[];
+  const pct = plimit ? pw.map(v=> v==null?null:Math.min(100, 100*v/plimit)) : null;
+  return {ts:h.ts, series:[h.series[2], pct]};
+}
+const GSPARK_OPT = {axis:false, fixMax:100, minMax:60, thr:[{v:85,k:'crit'}]};
+function drawGsparks(){
+  document.querySelectorAll('canvas.gspark').forEach(cv=>{
+    const h=gpuHist[cv.dataset.g]; if(!h) return;
+    draw(cv, gsparkData(h, +cv.dataset.p||150),
+      [{i:0,k:'warn',w:1.2},{i:1,k:'s1',w:1}], GSPARK_OPT);
+  });
+}
+
+/* ---------- 图表定义 ---------- */
+const charts = [
+ {id:'c_mem', metric:'mem',  series:[{i:0,k:'s1',fill:1,div:GB},{i:1,k:'s2',div:GB}],
+  floorZero:false, step:10, axf:v=>v.toFixed(0)+'G'},
+ {id:'c_gpu', metric:'gpu',  series:[{i:0,k:'accent',fill:1},{i:1,k:'s1'}], fixMax:100},
+ /* 吞吐 / 温度 / 磁盘网络三张大图已取消（信息在 KPI 带与显卡行里都有）。
+    它们的历史只能从 loadExtra 拉，KPI 小走势靠 extraHist 里的 tok / temp。 */
+];
+async function loadCharts(){
+  for(const c of charts){
+    try{
+      let data;
+      if(c.metric==='io'){
+        const d=await fetch('/api/history?metric=disk&range='+RANGE).then(x=>x.json());
+        const nn=await fetch('/api/history?metric=net&range='+RANGE).then(x=>x.json());
+        data={ts:d.ts, series:[d.series[1], nn.series[0], nn.series[1]]};
+      } else {
+        data=await fetch('/api/history?metric='+c.metric+'&range='+RANGE).then(x=>x.json());
+      }
+      c.data=data; draw($('#'+c.id), data, c.series, c); c.err=null;
+    }catch(e){ c.err=String(e && e.message || e); }
+  }
+}
+async function loadGpuHist(){
+  try{ gpuHist = await fetch('/api/gpu-history?range='+RANGE).then(x=>x.json()); }catch(e){}
+}
+function redrawAll(){
+  /* 没有数据时一律别重画：init 里 applyMode 会延后 80ms 调这里，
+     而内网拉数据只要几毫秒，于是先回来的那张图会被重画成「采集中…」空白，
+     直到下轮 15s 才恢复（这就是「内存图不刷新」的真因）。 */
+  charts.forEach(c=>{ const el=$('#'+c.id); if(el && c.data) draw(el,c.data,c.series,c); });
+  drawGsparks();
+}
+
+const extraHist = {};
+function seriesOf(metric, idx){
+  if(metric.indexOf('req:')===0) return reqSeries(metric.slice(4));
+  const c = charts.find(x=>x.metric===metric);
+  const d = c ? c.data : extraHist[metric];
+  return d && d.series ? d.series[idx] : null;
+}
+async function loadExtra(){
+  /* tok / temp 这里补拉：大图取消后，解码、预填充、CPU 温度三个 KPI 的小走势
+     全靠这两个历史（seriesOf 先查 charts 再回退到 extraHist）。 */
+  for(const k of ['strata','gpumem','gputemp','cpu','tok','temp']){
+    try{ extraHist[k] = await fetch('/api/history?metric='+k+'&range='+RANGE).then(x=>x.json()); }catch(e){}
+  }
+}
+function reqSeries(key){
+  if(!reqRows.length) return null;
+  const now=Date.now()/1000, from=now-RANGE, N=24;
+  const sum=new Array(N).fill(0), cnt=new Array(N).fill(0);
+  reqRows.forEach(r=>{
+    if(r.ts<from || r.ts>now) return;
+    const v = key==='hit' ? (r.prompt? 100*(r.reused||0)/r.prompt : null)
+                          : (r.drafts? 100*(r.acc||0)/r.drafts : null);
+    if(v==null) return;
+    const i=Math.max(0, Math.min(N-1, Math.floor((r.ts-from)/RANGE*N)));
+    sum[i]+=v; cnt[i]++;
+  });
+  return sum.map((v,i)=> cnt[i]? v/cnt[i] : null);
+}
+
+/* ---------- KPI ---------- */
+function tile(o){
+  return '<div class="kpi" data-m="'+(o.m||'')+'" data-i="'+(o.mi!=null?o.mi:'')+'"'+
+    ' data-g="'+(o.gauge!=null?o.gauge:'')+'" data-c="'+(o.sc||'')+'">'+
+    '<div class="lab"><span class="dot '+(o.dot||'off')+'" style="display:inline-block;width:6px;height:6px;'+
+    'margin-right:4px;vertical-align:middle"></span>'+o.lab+'</div>'+
+    '<div class="val" style="color:var(--'+(o.color||'tx')+')">'+o.val+(o.unit?'<small>'+o.unit+'</small>':'')+'</div>'+
+    '<canvas></canvas><div class="foot">'+(o.foot||'')+'</div></div>';
+}
+function renderKpis(s){
+  const mem = s.mem||{}, gg = s.g||{}, eng=s.engine||{}, live=eng.live||{},
+        tot=eng.totals||{}, e=eng.engine||{};
+  /* 框架名：strata / maya，标签和配置卡按它分叉（后端在 /metrics 上探好回传） */
+  const EK = eng._kind||'strata';
+  /* 投机是否启用：不认框架名（DFlash/MTP 都是实现细节），
+     看 speculation 名单或 dflash/mtp 计数，关了就照实说关闭 */
+  const specOn = EK==='maya'
+    ? !!((e.speculation||[]).length || (e.dflash||0) || (e.mtp||0))
+    : !!((e.drafting||'') && e.drafting!=='—' && e.drafting!=='off');
+  const hit = tot.prompt_tokens? 100*tot.reused/tot.prompt_tokens : null;
+  /* maya 的 totals 没有 drafts 汇总，从最近的请求窗口里现算 */
+  let dOff = tot.drafts_offered||0, dAcc = tot.drafts_accepted||0;
+  if(EK==='maya' && !dOff){
+    (eng.requests||[]).forEach(function(r){ dOff+=r.drafts_offered||0; dAcc+=r.drafts_accepted||0; });
+  }
+  const acc = dOff? 100*dAcc/dOff : null;
+  const availGB = mem.avail/GB;
+  const pt = live.prompt_total||live.prompt_tokens||0;
+  const ctxP = pt ? 100*pt/(e.context||262144) : 0;
+  const col = (v,w,c)=> v==null?'tx':(v>=c?'crit':v>=w?'warn':'tx');
+  const gmemP = gg.mem_total? 100*gg.mem_used/gg.mem_total : null;
+  const powP  = gg.plimit&&gg.power ? 100*gg.power/gg.plimit : null;
+  /* 顺序：推理引擎相关在前（吐名→请求进度→缓存质量→投机→进程），硬件在后（卡→功耗→主机） */
+  const T = [
+    {lab:'解码', val:(s.tok_s||0).toFixed(1), unit:'t/s', color:'accent', m:'tok',mi:0,sc:'accent',
+     dot:s.eng_up?'ok':'crit',
+     foot:live.state==='generating'?('生成 '+live.generated+' tok'):('均值 '+(live.tok_s_mean!=null?live.tok_s_mean.toFixed(1):'—'))},
+    {lab:'预填充', val:(s.prefill_tok_s||0).toFixed(0), unit:'t/s', m:'tok',mi:1,sc:'s2', dot:'ok',
+     foot: EK==='maya' ? (specOn?'投机解码':'投机关闭') : ('cap '+(e.prefill_cap||'—')+' tok/步')},
+    {lab:'上下文占用', val:ctxP.toFixed(1), unit:'%', color:col(ctxP,80,92), dot:lvl(ctxP,80,92),
+     gauge:ctxP, sc:'s1',
+     foot:(pt/1024).toFixed(0)+'K / '+((e.context||0)/1024).toFixed(0)+'K'},
+    {lab:'前缀复用率', val:(hit==null?'—':hit.toFixed(1)), unit:'%', dot:'ok',
+     m:'req:hit', sc:'s2',
+     foot:(tot.requests||0)+' 次 · 输出 '+(tot.output_tokens||0).toLocaleString()},
+    {lab:'投机接受率', val:(acc==null?'—':acc.toFixed(0)), unit:'%', dot:'ok', m:'req:acc', sc:'s2',
+     foot: dOff ? (dAcc/1000).toFixed(1)+'k / '+(dOff/1000).toFixed(1)+'k 草稿' : '未启用'},
+    {lab:(EK==='maya'?'MAYA':'STRATA')+' 常驻', val:fmtGB(s.eng_ram!=null?s.eng_ram:(s.strata&&s.strata.rss)), m:'strata',mi:0,sc:'s2',
+     dot:s.strata&&s.strata.pid?'ok':'off',
+     foot:s.strata&&s.strata.etime_s?('跑 '+fmtDur(s.strata.etime_s)):'未运行'},
+    {lab:'GPU 均载', val:(gg.util==null?'—':gg.util.toFixed(0)), unit:'%', m:'gpu',mi:0,sc:'s2',
+     dot:lvl(gg.temp,85,92), foot:(s.gpus||[]).length+' 卡 · 均温 '+(gg.temp!=null?gg.temp.toFixed(0):'—')+'°'},
+    {lab:'显存合计', val:(gg.mem_used/1024).toFixed(1), unit:'GiB', m:'gpumem',mi:0,sc:'s1',
+     dot:lvl(gmemP,88,96), foot:'共 '+(gg.mem_total?(gg.mem_total/1024).toFixed(0):'—')+' GiB'},
+    {lab:'GPU 功率', val:(gg.power==null?'—':gg.power.toFixed(0)), unit:'W', m:'gpu',mi:1,sc:(powP!=null&&powP>=90?'warn':'s2'),
+     dot:powP>80?'warn':'ok', foot:'占上限 '+(powP!=null?powP.toFixed(0):'—')+'%'},
+    {lab:'内存', val:(mem.used/GB).toFixed(0), unit:'GiB', m:'mem',mi:0,sc:'s1',
+     dot:availGB<12?'crit':availGB<24?'warn':'ok',
+     foot:'可用 '+availGB.toFixed(1)+' · 缓存 '+(mem.cached/GB).toFixed(0)},
+    {lab:'CPU', val:(s.cpu==null?'—':s.cpu.toFixed(0)), unit:'%', color:col(s.cpu,85,95),
+     m:'cpu',mi:0,sc:'s2', dot:lvl(s.cpu,85,95),
+     foot:'负载 '+(s.load1!=null?s.load1.toFixed(1):'—')+' / '+s.nproc+' 线程'},
+    {lab:'CPU 温度', val:(s.cpu_temp==null?'—':s.cpu_temp.toFixed(0)), unit:'°C', color:col(s.cpu_temp,80,90),
+     m:'temp',mi:2,sc:(s.cpu_temp!=null&&s.cpu_temp>=80?'warn':'s2'), dot:lvl(s.cpu_temp,80,90),
+     foot:'盘 '+(s.nvme_temp!=null?s.nvme_temp.toFixed(0):'—')+'° · 箱 '+(s.fan_case||'—')+'rpm'},
+  ];
+  const box=$('#kpis'); box.innerHTML = T.map(tile).join('');
+  box.querySelectorAll('.kpi').forEach(el=>{
+    const cv=el.querySelector('canvas'), key=el.dataset.c||'s2';
+    if(!cv) return;
+    if(el.dataset.g!==''){ gauge(cv, +el.dataset.g, key); return; }
+    const mk=el.dataset.m;
+    if(!mk) return;
+    spark(cv, seriesOf(mk, +(el.dataset.i||0)), key);
+  });
+}
+
+/* ---------- GPU 卡 ---------- */
+/* 串行流水线：某一拍只有一两张卡在跑，瞬时采样很轻易错过，
+   所以“出过力”判中后保持 BUSY_HOLD 毫秒，既看得出在转、又不会抖成闪屏 */
+const BUSY = {};              // GPU 序号 -> 最近一次判为出力的时刻
+const FAST = {ok:0, calls:0, errs:0};   // 高频通道状态
+/* 高频通道活着时保持期缩到 1.5s（亮灭更追手），退回 3s 主通道时回到 4s，
+   否则两次采样之间会看得到闪灭 */
+function holdMs(){ return (Date.now()-FAST.ok < 5000) ? 1500 : 4000; }
+function busyHit(x){
+  const lim = x.plimit || x.pmax;
+  /* 实测（4.5s 真实请求，8 卡全部轮流跑过）：出力那张卡 util 能冲到 100%，
+     但功率只到上限的 33~51%（T10 最高 77W/150），而 A5500 这张空载就有 54%上限
+     （最高 62W/115）。所以 util 是主判据，功率只当兵底且阈值要抬到 62%，
+     否则 A5500 空载会被误判成在出力。*/
+  return (x.util || 0) >= 50 ||
+         (lim && x.power != null && x.power >= lim * 0.62);
+}
+function renderGpus(s){
+  const gs=s.gpus||[];
+  const tp=gs.reduce((a,x)=>a+(x.power||0),0);
+  $('#gsum').innerHTML='合计 <b style="color:var(--tx);font-family:var(--mono)">'+tp.toFixed(0)+' W</b> · 温度 '+
+    Math.min.apply(null,gs.map(x=>x.temp||0))+'~'+Math.max.apply(null,gs.map(x=>x.temp||0))+'°C';
+  $('#gpus').innerHTML=gs.map(x=>{
+    const mp=x.mem_total?100*x.mem_used/x.mem_total:0, lim=x.plimit||x.pmax;
+    if(busyHit(x)) BUSY[x.i]=Date.now();
+    const busy=(BUSY[x.i]||0) > Date.now()-holdMs();
+    const tc=x.temp>=85?'var(--crit)':x.temp>=70?'var(--warn)':'var(--tx)';
+    return '<div class="gcard'+(busy?' busy':'')+'" data-g="'+x.i+'"'+
+      ' data-lim="'+(lim?lim.toFixed(0):'')+'"><div class="gh"><span class="gi">#'+x.i+'</span>'+
+      '<span style="overflow:hidden;text-overflow:ellipsis">'+x.name.replace('NVIDIA ','').replace(' GPU','')+
+      '</span><span class="dot '+lvl(x.temp,85,92)+'" style="margin-left:auto"></span></div>'+
+      '<div class="mbar"><i class="'+(mp>97?'warn':'')+'" style="width:'+mp+'%"></i><span>'+(x.mem_used/1024).toFixed(1)+' / '+
+      (x.mem_total/1024).toFixed(0)+' GiB</span></div>'+
+      '<div class="gline"><span>利用率</span><b class="ut" style="color:'+(busy?'var(--accent)':'var(--tx)')+'">'+
+      (x.util==null?'—':x.util.toFixed(0)+'%')+'</b></div>'+
+      '<div class="gline"><span>温度/功率</span><b class="tp" style="color:'+tc+'">'+(x.temp!=null?x.temp.toFixed(0)+'°':'—')+
+      ' · '+(x.power!=null?x.power.toFixed(0):'—')+'W'+(lim?'/'+lim.toFixed(0):'')+'</b></div>'+
+      '<div class="gline"><span>频率/链路</span><b>'+(x.clk!=null?x.clk.toFixed(0):'—')+'M · G'+(x.pcie_gen||'?')+'×'+
+      (x.pcie_width||'?')+'</b></div>'+
+      '<div class="gline" style="height:11px">'+(x.throttle||[]).map(t=>'<span class="badge">'+t+'</span>').join(' ')+
+      ' '+(x.throttle_soft||[]).map(t=>'<span class="badge soft">'+t+'</span>').join(' ')+'</div>'+
+      '<canvas class="gspark" data-g="'+x.i+'" data-p="'+(x.plimit||x.pmax||150)+'"></canvas></div>';
+  }).join('');
+  drawGsparks();
+}
+
+/* 高频通道：只改变色与两个数字，不重建 DOM（重建会重画 spark、抖滚动位置）。
+   后端 0.7s 采一次 nvidia-smi，前端 0.45s 拉一次，端到端约 1s。 */
+let fastN = 0;
+async function fastGpus(){
+  /* 后台标签不必 0.45s 一采，但绝对不能整个停：
+     内嵌面板经常一直报 document.hidden=true，写成 return 会让快采永不启动 */
+  if(document.hidden && (fastN++ % 4)) return;
+  try{
+    FAST.calls++;
+    const r = await fetch('/api/gpu-live', {cache:'no-store'});
+    if(!r.ok) throw new Error('http '+r.status);
+    const d = await r.json();
+    if(!d || !d.gpus || !d.gpus.length) return;
+    FAST.ok = Date.now();
+    const hm = holdMs(), now = Date.now();
+    d.gpus.forEach(x=>{
+      if(busyHit(x)) BUSY[x.i]=now;
+      const busy=(BUSY[x.i]||0) > now-hm;
+      const el=document.querySelector('.gcard[data-g="'+x.i+'"]'); if(!el) return;
+      el.classList.toggle('busy', busy);
+      const ut=el.querySelector('b.ut');
+      if(ut && x.util!=null){ ut.textContent=x.util.toFixed(0)+'%';
+        ut.style.color=busy?'var(--accent)':'var(--tx)'; }
+      const tp=el.querySelector('b.tp');
+      if(tp && x.power!=null){
+        const lim=+el.dataset.lim||0;
+        tp.textContent=(x.temp!=null?x.temp.toFixed(0)+'°':'—')+' · '+x.power.toFixed(0)+'W'+
+                       (lim?'/'+lim:'');
+        tp.style.color=x.temp>=85?'var(--crit)':x.temp>=70?'var(--warn)':'var(--tx)';
+      }
+    });
+  }catch(e){ FAST.errs++; /* 后端没这个端点时静默退回 3s 主通道 */ }
+}
+
+/* ---------- 引擎 ---------- */
+function kv(rows){ return rows.filter(Boolean).map(r=>'<div class="k">'+r[0]+'</div><div class="v">'+r[1]+'</div>').join(''); }
+function renderEngine(s){
+  const eng=s.engine, live=(eng||{}).live||{}, e=(eng||{}).engine||{},
+        cc=(eng||{}).conversation_cache||{}, tot=(eng||{}).totals||{}, hw=(eng||{}).hardware||{},
+        /* 框架分叉：标签与配置卡用哪套字段都看它 */
+        EK2=(eng&&eng._kind)||'strata', tw=((eng||{}).tiers||{}).now||{},
+        specOn = EK2==='maya'
+          ? !!((e.speculation||[]).length || (e.dflash||0) || (e.mtp||0))
+          : !!((e.drafting||'') && e.drafting!=='—' && e.drafting!=='off');
+  const dot=$('#engdot'), st=$('#engstate');
+  if(!eng){ dot.className='dot crit'; st.textContent='引擎无响应'; }
+  else if(live.state==='generating'){ dot.className='dot ok'; st.textContent='生成 '+(live.generated||0)+' tok · '+(live.tok_s!=null?live.tok_s.toFixed(0):'0')+' t/s'; }
+  else if(live.state && live.state!=='idle'){ dot.className='dot warn'; st.textContent=live.phase||live.state; }
+  else { dot.className='dot ok'; st.textContent='空闲就绪'; }
+  $('#engvia').textContent = eng?('via '+(eng._via||'')+' · v'+(e.version||e.maya_version||'?')):'';
+  $('#lvphase').textContent = eng?({generating:'正在生成',reading:'读取提示词',prefilling:'预填充',idle:'空闲等待'}[live.state]||live.state||'—'):'引擎不可用';
+  $('#lvsub').innerHTML = eng?('<div class="k">'+((live.state==='idle')
+      ? ('等待请求 · 上一轮 '+((live.prompt_total||live.prompt_tokens||0)).toLocaleString()+' prompt')
+      : ((live.phase||'')+' · '+((live.prompt_total||live.prompt_tokens||0)).toLocaleString()+' prompt · '
+          +(live.elapsed_s!=null?live.elapsed_s.toFixed(1):'—')+'s'+(live.queued?' · 排队 '+live.queued:'')))
+      +'</div>'):('<div class="k" style="color:var(--crit)">'+(s.engine_err||[]).join(' · ')+'</div>');
+  const pt=live.prompt_total||live.prompt_tokens||0, gen=live.generated||0, mx=live.max_tokens||0;
+  const scale=Math.max(pt+gen,mx,1);
+  $('#progRead').style.width=(100*Math.min(pt,mx)/scale)+'%';
+  $('#progGen').style.width=(100*Math.min(gen,mx)/scale)+'%';
+  $('#lvkv').innerHTML=kv([
+    ['本轮均值', live.tok_s_mean!=null?live.tok_s_mean.toFixed(1)+' t/s':'—'],
+    ['预填充均值', live.prefill_tok_s_mean!=null?live.prefill_tok_s_mean.toFixed(0)+' t/s':'—'],
+    ['PCIe 读/写', (hw.gpu_pcie_rx_mb!=null?hw.gpu_pcie_rx_mb.toFixed(0):'—')+' / '+
+      (hw.gpu_pcie_tx_mb!=null?hw.gpu_pcie_tx_mb.toFixed(0):'—')+' MB/s'],
+    EK2==='maya'
+      ? ['专家层命中', 'VRAM '+(tw.vram_hit!=null?(tw.vram_hit*100).toFixed(1)+'%':'—')
+          +' · RAM 取 '+(tw.ram_fetch!=null?(tw.ram_fetch*100).toFixed(1)+'%':'—')]
+      : ['驻留会话', cc.enabled?cc.parked+' / '+cc.slots+' · '+(cc.bytes/GB).toFixed(1)+' GiB':'—'],
+    ['累计复用', tot.prompt_tokens?((tot.reused/1e6).toFixed(2)+'M / '+(tot.prompt_tokens/1e6).toFixed(2)+'M tok'):'—']]);
+  const m=s.mem||{}, stt=s.strata||{};
+  $('#memkv').innerHTML=kv([
+    ['占用 / 可用', em(fmtGB(m.used))+' / '+fmtGB(m.avail)],
+    ['free 口径活跃', fmtGB(m.app)],
+    ['页缓存 / 交换', fmtGB(m.cached)+' / '+fmtGB(m.swap_used)],
+    ['引擎侧内存 / RSS', em(fmtGB(s.eng_ram!=null?s.eng_ram:stt.rss))+' · '+fmtGB(stt.rss)+' + '+fmtGB(stt.vision_rss)]]);
+  /* maya 的 totals 没有 drafts 汇总，从请求窗口现算；strata 只认 totals，别混 */
+  let accR='—';
+  if(EK2==='maya'){
+    let o=0,a=0;
+    (eng.requests||[]).forEach(function(r){ o+=r.drafts_offered||0; a+=r.drafts_accepted||0; });
+    if(o) accR=(100*a/o).toFixed(0)+'%';
+  } else if(tot.drafts_offered){
+    accR=(100*tot.drafts_accepted/tot.drafts_offered).toFixed(0)+'%';
+  }
+  const rows=[
+    ['模型', '<em class="k">'+(e.model_label||e.model||'—')+'</em>'],
+    ['上下文 / KV', ((e.context||0)/1024).toFixed(0)+'K · '+e.kv+' 常驻 '+((e.kv_resident||0)/1024).toFixed(0)+'K'],
+    ['专家缓存', ((e.expert_cache_mib||0)/1024).toFixed(1)+' GiB · '+(e.expert_slots||'?')+' slots']
+  ];
+  if(EK2==='maya'){
+    rows.push(
+      ['显存 / 内存分层', (e.vram_gb||'—')+' GiB · '+(e.vram_slots||'?')+' slots / '
+        +(e.ram_gb||'—')+' GiB · '+(e.ram_slots||'?')+' slots'],
+      ['投机解码', specOn
+        ? (((e.speculation||[]).join('/')||'启用')+' · dflash '+(e.dflash||0)+' / mtp '+(e.mtp||0))
+        : '关闭'],
+      ['投机接受率', accR],
+      ['线程 / PCIe 份额', (e.cpu_threads||'?')+' · '+((e.pcie_share||1)*100).toFixed(0)+'%'],
+      ['专家存储', (eng.storage&&eng.storage.path?eng.storage.path.split('/').pop():'—')
+        +' · 余 '+(((eng.storage||{}).free||0)/GB).toFixed(0)+' / '+(((eng.storage||{}).total||0)/GB).toFixed(0)+' GiB'],
+      ['折算节省', eng.savings&&eng.savings.priced?('$'+(eng.savings.usd||0).toFixed(2)):'—']);
+  } else {
+    rows.push(
+      ['显存内主缓存', ((e.expert_cache_primary_mib||0)/1024).toFixed(2)+' GiB'],
+      ['显存余量 / Arena', (e.vram_free_mib!=null?e.vram_free_mib.toFixed(0)+' MiB':'—')+' / '+
+        ((e.arena_mib||0)/1024).toFixed(0)+' GiB'],
+      ['投机解码', (e.drafting||'—')+' · spec '+(e.spec||'?')+' / mtp '+(e.mtp_max||'?')+' / lookup '+(e.lookup||'?')],
+      ['投机接受率', accR+' · min_p '+(e.spec_min_p||'?')],
+      ['预填充', 'cap '+(e.prefill_cap||'?')+' · stages '+(e.prefill_stages||'?')],
+      ['线程 / PCIe 份额', (e.pool_workers||'?')+' · '+((e.pcie_frac||0)*100).toFixed(0)+'%']);
+  }
+  rows.push(
+    ['引擎侧内存', fmtGB(hw.ram_used)+' / '+fmtGB(hw.ram_total)],
+    ['视觉输入', e.images?'支持':'否'],
+    ['累计', (tot.requests||0)+' 次 · 预填充 '+((tot.prompt_ms||0)/1000).toFixed(0)+'s · 解码 '+((tot.decode_ms||0)/1000).toFixed(0)+'s']);
+  $('#engkv').innerHTML=kv(rows);
+}
+
+/* ---------- 请求 / 事件 / 页脚 ---------- */
+async function loadReqs(){
+  try{ reqRows = await fetch('/api/requests?limit=120').then(x=>x.json()); }catch(e){}
+  $('#reqempty').style.display = reqRows.length?'none':'block';
+  const win = reqRows.slice(0,40);
+  $('#eqsum').textContent = '窗口 '+reqRows.length+' 条';
+  $('#reqs tbody').innerHTML = win.map(r=>{
+    const hit=r.prompt?100*(r.reused||0)/r.prompt:0, acc=r.drafts?100*(r.acc||0)/r.drafts:null;
+    return '<tr><td>'+hhmm(r.ts)+'</td><td>'+fmtDur(r.dur)+'</td>'+
+      '<td>'+(r.prompt?r.prompt.toLocaleString():'—')+'</td>'+
+      '<td style="color:'+(hit>95?'var(--accent)':hit>40?'var(--mut)':'var(--dim)')+'">'+hit.toFixed(0)+'%</td>'+
+      '<td>'+(r.out!=null?r.out.toLocaleString():'—')+'</td>'+
+      '<td>'+(r.ttft!=null?r.ttft.toFixed(2):'—')+'</td>'+
+      '<td style="color:'+(r.decode_toks>45?'var(--accent)':'var(--tx)')+'">'+(r.decode_toks!=null?r.decode_toks.toFixed(1):'—')+'</td>'+
+      '<td>'+(acc!=null?acc.toFixed(0)+'%':'—')+'</td>'+
+      '<td style="color:'+(r.finish==='stop'?'var(--dim)':'var(--warn)')+'">'+(r.finish||'—')+'</td></tr>';
+  }).join('');
+}
+async function loadEvents(){
+  let rows=[]; try{ rows=await fetch('/api/events?limit=40').then(x=>x.json()); }catch(e){}
+  $('#evts').innerHTML = rows.length ? rows.map(r=>'<div class="evt '+r.level+'"><span class="et">'+
+    hhmm(r.ts)+'</span><span class="em">'+r.text+'</span></div>').join('')
+    : '<div class="empty">未触发任何阈值</div>';
+}
+/* 卡面底色（半透明填色的参照系），换主题要重算 */
+let PANEL_RGB = null, PANEL_THEME = '';
+function panelRGB(el){
+  if(PANEL_RGB && PANEL_THEME === THEME) return PANEL_RGB;
+  const m = /rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/.exec(
+    el ? getComputedStyle(el).backgroundColor : '') || [];
+  PANEL_RGB = m.length ? [+m[1], +m[2], +m[3]] : [15,19,23];
+  PANEL_THEME = THEME;
+  return PANEL_RGB;
+}
+
+/* 行列都自适应：格子尽量方正、末行不留大片空位。
+   换 CPU（线程数变了）或换窗口宽高都不用改代码，
+   44 线程在 1920 下会选中 3×15（余 1 格）而不是 2×22 的瘦长条。 */
+function coreGrid(n, W, H, gap){
+  let best = null;
+  for(let r=1; r<=Math.min(n,10); r++){
+    const c = Math.ceil(n/r), empty = r*c-n;
+    const w = (W-(c-1)*gap)/c, h = (H-(r-1)*gap)/r;
+    if(w<10 || h<14) continue;
+    /* 方正优先（宽高比对数越接近 0 越方），空位轻罚，别为消一格空位把格子拉成长条 */
+    const score = Math.abs(Math.log(w/h)) + empty*0.15;
+    if(!best || score<best.score) best = {r:r, c:c, w:w, score:score};
+  }
+  return best || {r:2, c:Math.ceil(n/2), w:0, score:0};
+}
+
+function renderCores(s){
+  const cores = s.cores || [], box = $('#cores');
+  if(!box || !cores.length) return;
+  /* 布局参数（线程数 × 卡片内容区尺寸）变了才重排，否则每拍只改颜色与文字 */
+  const W = box.clientWidth, H = box.clientHeight, gap = 3;
+  const key = cores.length+'x'+Math.round(W)+'x'+Math.round(H);
+  if(box.dataset.grid !== key){
+    const g = coreGrid(cores.length, W, H, gap);
+    box.style.gridTemplateColumns = 'repeat('+g.c+',1fr)';
+    box.style.gridTemplateRows = 'repeat('+g.r+',1fr)';
+    /* 格宽放不下编号就只留百分比，再窄再收字号 */
+    box.classList.toggle('dense', g.w < 28);
+    box.classList.toggle('tiny', g.w < 20);
+    box.dataset.grid = key;
+  }
+  if(box.dataset.n !== String(cores.length) || box.childElementCount !== cores.length){
+    box.innerHTML = cores.map(()=>'<div class="core"><i></i><b></b></div>').join('');
+    box.dataset.n = String(cores.length);
+  }
+  const pb = panelRGB(box.parentElement), kids = box.children;
+  let hot = -1, hv = -1;
+  for(let i=0;i<cores.length;i++){
+    const v = cores[i]||0, el = kids[i]; if(!el) continue;
+    if(v > hv){ hv = v; hot = i; }
+    /* 中性亮度渐变：越亮越忙。颜色只在真的「钉死」时才变（≥95% 转红）：
+       Strata 会长期把 16 个工作线程转在 85~92%，那是正常满载不是异常，
+       给它们上 warn 等于每次推理一整排橙色，告警色就废了。
+       warn 留给聚合指标。 */
+    const a = 0.07 + Math.min(1, v/100)*0.88;
+    const cb = (v>=95 ? RGB.crit : RGB.s1).split(',').map(Number);
+    el.style.background = 'rgba('+cb.join(',')+','+a.toFixed(3)+')';
+    /* 填色是半透明叠在卡面上的，字色要按「混色后的实际亮度」选深/浅：
+       石墨里忙起来的浅格配浅字会糊成一片，纸白主题里又正好反过来。 */
+    const lum = .299*(pb[0]+(cb[0]-pb[0])*a) + .587*(pb[1]+(cb[1]-pb[1])*a)
+              + .114*(pb[2]+(cb[2]-pb[2])*a);
+    el.style.color = lum>140 ? 'rgba(8,11,13,.92)' : 'rgba(240,244,247,.92)';
+    el.firstChild.textContent = i;
+    el.lastChild.textContent = v.toFixed(0)+'%';
+    el.title = '线程 '+i+' · '+v.toFixed(0)+'%'+(i<cores.length/2?'（物理核 '+i+'）':'（兄弟线程）');
+  }
+  $('#cpunow').textContent = s.cpu!=null ? s.cpu.toFixed(0)+'%' : '—';
+  $('#cpuload').textContent = s.load1!=null ? s.load1.toFixed(1) : '—';
+  $('#cpun').textContent = s.nproc || cores.length;
+  $('#cpupk').textContent = hv>=0 ? ('最热 #'+hot+' '+hv.toFixed(0)+'%') : '';
+}
+function renderFoot(s){
+  const ms=s.mounts||[], net=s.net||{};
+  $('#fmounts').innerHTML='磁盘 '+ms.map(x=>'<b>'+x.mnt+' '+x.pct.toFixed(0)+'%</b>').join(' · ');
+  const n=Object.keys(net)[0];
+  $('#fnet').innerHTML = n?('网络 '+n+' ↓<b>'+fmtRate(net[n].rx)+'</b> ↑<b>'+fmtRate(net[n].tx)+'</b>'):'';
+  const dr=s.disk_rates||{};
+  $('#fdisk').innerHTML='读写 '+Object.keys(dr).map(d=>'<b>'+d.replace('nvme','')+': '+(dr[d].r/MB).toFixed(1)+'/'+
+    (dr[d].w/MB).toFixed(1)+' MB/s</b>').join(' · ');
+  $('#fsys').innerHTML='NVMe <b>'+(s.nvme_temp!=null?s.nvme_temp.toFixed(0):'—')+'°C</b> · 机箱 <b>'+
+    (s.fan_case||'—')+' rpm</b> · CPU <b>'+(s.freq!=null?s.freq.toFixed(0):'—')+' MHz</b> · PSI <b>'+
+    (s.psi&&s.psi.cpu!=null?s.psi.cpu.toFixed(1):'—')+'%</b>';
+  const fh = location.hostname||'localhost';
+  $('#flinks').innerHTML='<a href="http://'+fh+':8091/" target="_blank">控制台 :8091</a> · '+
+    '<a href="http://'+fh+':8080/" target="_blank">'+(((s.engine||{})._kind)==='maya'?'Maya':'Strata')+'</a> · '+
+    '<a href="http://'+fh+':8000/health" target="_blank">代理</a> · 保留 14 天 · 只读';
+}
+
+/* ---------- 主循环 ---------- */
+async function tick(){
+  try{
+    const s = await fetch('/api/live').then(x=>x.json());
+    if(!s.ts) return;
+    LAST = s;
+    $('#err').style.display='none';
+    $('#host').textContent = META.host || window.location.hostname;
+    renderKpis(s); renderGpus(s); renderEngine(s); renderCores(s); renderFoot(s);
+    /* 内存图标题上的实时数：曲线 15s 刷新，这两个数 3s 就动，一眼能确认没挂 */
+    const mm=s.mem||{}, ssx=s.strata||{};
+    $('#memused').textContent = mm.used!=null ? (mm.used/GB).toFixed(0)+'G' : '—';
+    $('#memrss').textContent = (s.eng_ram!=null?s.eng_ram:ssx.rss)!=null ? ((s.eng_ram!=null?s.eng_ram:ssx.rss)/GB).toFixed(0)+'G' : '—';
+    $('#memavail').textContent = mm.avail!=null ? (mm.avail/GB).toFixed(0)+'G' : '—';
+    const eng=s.engine||{}, live=eng.live||{}, e=eng.engine||{};
+    const pt=live.prompt_total||live.prompt_tokens||0;
+    $('#ctxpct').textContent = (e.context?(100*pt/e.context).toFixed(1):'0')+'%';
+    $('#uptime').textContent = fmtUp(s.uptime);
+    $('#lastage').textContent = Math.max(0,Date.now()/1000 - s.ts).toFixed(0)+'s';
+  }catch(e){
+    $('#err').style.display='block'; $('#err').textContent='拉取 /api/live 失败：'+e;
+  }
+}
+$('#ranges').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  document.querySelectorAll('#ranges button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); RANGE=+b.dataset.r;
+  loadCharts().then(()=>{ loadExtra().then(()=>{ if(LAST) renderKpis(LAST); }); });
+  loadGpuHist().then(()=>redrawAll());
+});
+$('#modes').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  MODE=b.dataset.m; try{ localStorage.setItem('hw_dash_mode',MODE); }catch(err){}
+  applyMode();
+});
+$('#themes').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  THEME=b.dataset.t; try{ localStorage.setItem('hw_dash_theme',THEME); }catch(err){}
+  applyTheme();
+});
+let rzT=null;
+addEventListener('resize',()=>{ clearTimeout(rzT); rzT=setTimeout(()=>{
+  if(MODE==='auto') applyMode(); redrawAll(); if(LAST) renderCores(LAST); },240); });
+const ro = new ResizeObserver(()=>redrawAll());
+function initRO(){ document.querySelectorAll('canvas').forEach(c=>ro.observe(c)); }
+
+/* ---------- 主题 ---------- */
+let THEME = 'graphite';
+try{ THEME = localStorage.getItem('hw_dash_theme') || 'graphite'; }catch(e){}
+const tm = location.search.match(/[?&]theme=(\w+)/); if(tm) THEME = tm[1];
+function applyTheme(){
+  document.documentElement.dataset.theme = THEME;
+  document.querySelectorAll('#themes button')
+    .forEach(b=>b.classList.toggle('on', b.dataset.t===THEME));
+  readPalette();
+  charts.forEach(c=>{
+    c.series.forEach(s=>{ if(s.k) s.color=C[s.k]; });
+    if(c.thr) c.thr.forEach(t=>{ if(t.k) t.color=C[t.k]; });
+  });
+  GSPARK_OPT.thr.forEach(t=>{ if(t.k) t.color=C[t.k]; });
+  setTimeout(()=>{ redrawAll(); if(LAST) renderKpis(LAST); }, 70);
+}
+
+/* ---------- 铺满 / 滚动 ---------- */
+let MODE = 'auto';
+try{ MODE = localStorage.getItem('hw_dash_mode') || 'auto'; }catch(e){}
+function applyMode(){
+  const wide = innerWidth>=1240 && innerHeight>=700;
+  const eff = MODE==='auto' ? (wide?'fit':'scroll') : MODE;
+  const cl = document.documentElement.classList;
+  cl.remove('fit','scroll','short','tiny');
+  cl.add(eff);
+  if(eff==='fit'){
+    if(innerHeight<860) cl.add('short');
+    if(innerHeight<770) cl.add('tiny');
+  }
+  document.querySelectorAll('#modes button').forEach(b=>b.classList.toggle('on', b.dataset.m===MODE));
+  setTimeout(()=>{ redrawAll(); if(LAST) renderCores(LAST); }, 80);
+}
+
+(async function init(){
+  applyTheme(); applyMode();
+  try{ META = await fetch('/api/meta').then(x=>x.json());
+    $('#cpuinfo').textContent = (META.cpu_name||'').replace('Intel(R) ','').replace(' CPU','')
+      .replace(/@ [\d.]+GHz/,'').trim()+' · '+(META.kernel||'');
+    document.title='硬件看板 · '+(META.host||'');
+  }catch(e){}
+  await loadCharts(); await loadGpuHist(); await loadExtra();
+  await tick(); loadReqs(); loadEvents(); initRO();
+  setInterval(tick, 3000);
+  fastGpus(); setInterval(fastGpus, 450);
+  setInterval(()=>{ loadCharts().then(()=>renderKpis(LAST)); }, 15000);
+  setInterval(loadExtra, 15000);
+  setInterval(loadGpuHist, 30000);
+  setInterval(()=>{ loadReqs().then(()=>{ if(LAST) renderKpis(LAST); }); }, 8000);
+  setInterval(loadEvents, 30000);
+  if(/[?&]probe=1/.test(location.search)){
+    const bd=document.querySelector('.board');
+    setTimeout(()=>{
+      const rows=['header','.kpis','.c1','.c4','.gp','.e1','.eq','footer'].map(sel=>{
+        const el=document.querySelector(sel); if(!el) return sel+'=?';
+        const r=el.getBoundingClientRect();
+        return sel.replace('.','')+':'+Math.round(r.top)+'+'+Math.round(r.height)+'w'+Math.round(r.width);
+      }).join(' ')+'  图：'+charts.map(c=>c.id+(c.data&&c.data.ts?'('+c.data.ts.length+'pt'
+        +(c.err?' ERR '+c.err:'')+')':'(无数据)')).join(' ');
+      document.documentElement.dataset.probe = JSON.stringify({
+      mode:MODE, theme:THEME, w:innerWidth, h:innerHeight, sh:document.documentElement.scrollHeight,
+      bh:bd.offsetHeight, cls:document.documentElement.className, rows:rows }); }, 1500);
+  }
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) setTimeout(redrawAll,120); });
+})();
+</script>
+</body>
+</html>

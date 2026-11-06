@@ -1,0 +1,18 @@
+[Unit]
+Description=Hardware + Inference Dashboard (port 8092)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# ↓ 改两处：User 和三条路径，与实际部署目录一致
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/hw-dashboard
+ExecStart=/usr/bin/python3 /home/YOUR_USER/hw-dashboard/hw_dashboard.py
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+# 只读采集：读 /proc /sys nvidia-smi 与 127.0.0.1 的引擎 /metrics，不启停任何服务
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

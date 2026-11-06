@@ -1,0 +1,4 @@
+hw_history.db
+hw_history.db-*
+__pycache__/
+*.pyc
